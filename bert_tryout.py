@@ -58,13 +58,15 @@ for idx, r in data.iterrows():
 print('LEN:', len(data))
 print(data['labels'].value_counts())
 
-data = data[:7200]
+data = data.iloc[:7200, :]
 
 data2 = pd.DataFrame()
 
 data2['content'] = data['content']
 data2['labels'] = data['labels']
 data = data2
+
+print(f'DF: {data.head()}')
 # ==============================================================================
 # configure transformer
 
@@ -119,8 +121,10 @@ def prepare_features(seq_1, max_seq_length=300, zero_pad=False,
     return torch.tensor(input_ids).unsqueeze(0), input_mask
 # ==============================================================================
 # splt data
-train_data = data[:7000]
-test_data = data[7000:]
+train_data = data.iloc[:7000, :]
+train_data = train_data.reset_index()
+test_data = data.iloc[7000:, :]
+test_data = test_data.reset_index()  # to work in transform class
 
 print('SPLIT')
 print(train_data.head())
@@ -128,7 +132,7 @@ print(test_data.head())
 # ==============================================================================
 # encode data
 
-class Intents(Dataset):
+class Transform_feats(Dataset):
     def __init__(self, dataframe):
         self.len = len(dataframe)
         self.data = dataframe
@@ -146,8 +150,11 @@ class Intents(Dataset):
         return self.len
 
 
-training_set = Intents(train_data)
-testing_set = Intents(test_data)
+training_set = Transform_feats(train_data)
+testing_set = Transform_feats(test_data)
+
+#for i in testing_set:
+#    print(f'testing {i}')
 
 # getitem__(5000) == X and y row 5000 in tensor
 # getitem__(5000)[0] == X row 5000 ([1] == y)
@@ -155,10 +162,11 @@ print('training_set:', training_set.__getitem__(5000)[0])
 
 # put encoded X in BERT model
 print(model(training_set.__getitem__(5000)[0]))
+print('test_set:', training_set.__getitem__(1)[0])
 # ==============================================================================
 # create data loaders
 
-train_loader = DataLoader(training_set, batch_size=1, shuffle=True, drop_last=False, num_workers=1)
+train_loader = DataLoader(training_set, batch_size=1, shuffle=False, drop_last=False, num_workers=1)
 test_loader = DataLoader(testing_set, batch_size=1, shuffle=False, drop_last=False, num_workers=1)
 # ===============================================================================
 # set model
@@ -182,17 +190,18 @@ def train_val(model, train_data, val_data, epochs, lr,
     criterion = nn.CrossEntropyLoss()  # CrossEntropyLoss()  #BCELoss()  # binary cross entropy loss aplies cross entropy on 1 value between 0 and 1
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     step_counter = 0
-    min_valid_loss = np.Inf
-    new_valid_loss = 0
-    max_valid_acc = 0
+    min_test_loss = np.Inf
+    new_test_loss = 0
+    max_test_acc = 0
     start_time = time.time()
 
-    for e in range(epochs):
+    for e in tqdm(range(epochs)):
 
         train_losses = []
         train_correct = 0
         train_total = 0
         #train_accs = []
+        test_losses = []
         test_correct = 0
         test_total = 0
 
@@ -202,7 +211,7 @@ def train_val(model, train_data, val_data, epochs, lr,
         # h = net.init_hidden(batch_size)
         val_counter = 0
 
-        for X_train, y_train in train_data:
+        for X_train, y_train in tqdm(train_data):
             X_train, y_train = X_train.to(device), y_train.to(device)
             X_train = X_train.squeeze(0)
 
@@ -216,13 +225,13 @@ def train_val(model, train_data, val_data, epochs, lr,
 
             # pass x/input/integer words and hidden state
             output = model.forward(X_train)[0]  # explicitly need .forward??
-            print(f'OUTPUT: {output}')
-            print(f'SQUEEZE: {output.squeeze()}')
+            #print(f'OUTPUT: {output}')
+            #print(f'SQUEEZE: {output.squeeze()}')
 
             _, predicted = torch.max(output, 1)
-            print(f'PREDICTED {predicted}, {_}, len, {len(predicted)}')
-            print(f'PREDICTED {predicted.item()}, {_}')
-            print(f'TRUE: {y_train}')
+            #print(f'PREDICTED {predicted}, {_}, len, {len(predicted)}')
+            #print(f'PREDICTED {predicted.item()}, {_}')
+            #print(f'TRUE: {y_train}')
 
             # calculate loss
             loss = criterion(output, y_train)  # 350 = padding  # verwijder squeze en float
@@ -235,7 +244,7 @@ def train_val(model, train_data, val_data, epochs, lr,
 
             train_correct += (predicted.cpu() == y_train.cpu()).sum()
             train_total += len(predicted)
-            print(f'TRAIN_CORRECT: {train_correct}')  # .round round to nearest full integer
+            #print(f'TRAIN_CORRECT: {train_correct}')  # .round round to nearest full integer
             #acc = correct.count(True)/len(matches)  #pred/true
             #train_accs.append(acc)
 
@@ -243,7 +252,7 @@ def train_val(model, train_data, val_data, epochs, lr,
 
             if step_counter % print_every == 0:
 
-                print('VALIDATING...')
+                print('\nVALIDATING DATA...')
                 val_counter += 1
 
                 with torch.no_grad():
@@ -252,19 +261,20 @@ def train_val(model, train_data, val_data, epochs, lr,
 
                     # val_h = net.init_hidden(batch_size)
 
-                    val_losses = []
+                    #loss_list = []
                     #val_accs = []
 
-                    for X_test, y_test in tqdm(val_data):
-
+                    for X_test, y_test in val_data:
                         X_test, y_test = X_test.to(device), y_test.to(device)
+                        X_test = X_test.squeeze(0)
+
 
                         #val_h = tuple([each.data for each in val_h])
                         output = model.forward(X_test)[0]
                         _, predicted = torch.max(output.data, 1)  # why .data here???
 
-                        val_loss = criterion(output, y_test)
-                        val_losses.append(val_loss.item())
+                        test_loss = criterion(output, y_test)
+                        test_losses.append(test_loss.item())
                         test_correct += (predicted.cpu() == y_test.cpu()).sum()
                         test_total += len(predicted)
 
@@ -272,28 +282,28 @@ def train_val(model, train_data, val_data, epochs, lr,
                         # acc = correct.count(True)/len(matches)
                         # val_accs.append(acc)
 
-                    valid_loss.append(np.mean(val_losses))
+                    #test_losses.append(np.mean(loss_list))
                     #valid_acc.append(np.mean(val_accs))
-                    training_loss.append(np.mean(train_losses))
+                    #train_losses.append(np.mean(train_losses))
                     #training_acc.append(np.mean(train_accs))
 
                     print('\ntest: {} in epoch: {}'.format(val_counter, e+1),
                           '\ntrain loss: {}'.format(np.mean(train_losses)),
-                          '\nvalidation loss: {}'.format(np.mean(val_losses)),
-                          '\ntrain accuracy:', train_correct/train_total,
-                          '\nvalidation accuracy: ', test_correct/test_total)
+                          '\nvalidation loss: {}'.format(np.mean(test_losses)),
+                          '\ntrain accuracy:', train_correct.numpy()/train_total,
+                          '\nvalidation accuracy: ', test_correct.numpy()/test_total)
 
 
                     # save model with smallest validation loss
-                    new_valid_loss = np.mean(val_losses)
+                    new_test_loss = np.mean(test_losses)
                     #if new_valid_loss <= min_valid_loss:
-                    if test_correct/test_total >= max_valid_acc:
+                    if test_correct.numpy()/test_total >= max_test_acc:
 
                         #print("\nSmallest validation loss detected. Saving model...")
                         print("\nMax validation accuracy detected. Saving model...")
 
                         #min_valid_loss = np.mean(val_losses)
-                        max_valid_acc = np.mean(test_correct/test_total)
+                        max_test_acc = np.mean(test_correct.numpy()/test_total)
 
                         model_name = 'bert_tryout'
                         torch.save(model.state_dict(), model_name)
@@ -304,4 +314,7 @@ def train_val(model, train_data, val_data, epochs, lr,
 
 # train and val
 train_val(model=model, train_data=train_loader, val_data=test_loader, epochs=3,
-          lr=0.00001, clip=5, print_every=20)
+          lr=0.00001, clip=5, print_every=200)
+
+# ==============================================================================
+# plot and visualize
